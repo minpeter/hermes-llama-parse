@@ -65,30 +65,15 @@ class Hermes2ProToolParser(ToolParser):
         self.tool_call_start_tokens = self._get_token_ids(self.tool_call_start_token)
         self.tool_call_end_tokens = self._get_token_ids(self.tool_call_end_token)
         if not self.tool_call_start_tokens or not self.tool_call_end_tokens:
-            logger.warning(
-                "Tool call tokens may be split across multiple tokens. "
-                "Using text-based matching as fallback."
+            logger.error("Tool call tokens not found in the tokenizer!")
+            raise RuntimeError(
+                "Hermes 2 Pro Tool parser could not locate tool call start/end "
+                "tokens in the tokenizer!"
             )
 
     def _get_token_ids(self, text: str) -> list[int]:
         """Get all possible token IDs for a given text."""
         return self.model_tokenizer.encode(text, add_special_tokens=False)
-
-    def _count_token_sequences(
-        self, token_ids: Sequence[int], target_sequence: list[int]
-    ) -> int:
-        """Count occurrences of a token sequence in a list of token IDs."""
-        if not target_sequence:
-            return 0
-        count = 0
-        i = 0
-        while i <= len(token_ids) - len(target_sequence):
-            if token_ids[i : i + len(target_sequence)] == target_sequence:
-                count += 1
-                i += len(target_sequence)
-            else:
-                i += 1
-        return count
 
     def extract_tool_calls(
         self,
@@ -157,26 +142,23 @@ class Hermes2ProToolParser(ToolParser):
 
         logger.debug("delta_text: %s", delta_text)
         logger.debug("delta_token_ids: %s", delta_token_ids)
-
-        # Use text-based check as primary method
-        if self.tool_call_start_token not in current_text:
-            logger.debug("No tool call tokens found in text!")
+        # check to see if we should be streaming a tool call - is there a
+        if self.tool_call_start_token_id not in current_token_ids:
+            logger.debug("No tool call tokens found!")
             return DeltaMessage(content=delta_text)
 
         try:
-            # Update token counting to use sequence matching
-            prev_tool_start_count = self._count_token_sequences(
-                previous_token_ids, self.tool_call_start_tokens
+
+            # figure out where we are in the parsing by counting tool call
+            # start & end tags
+            prev_tool_start_count = previous_token_ids.count(
+                self.tool_call_start_token_id
             )
-            prev_tool_end_count = self._count_token_sequences(
-                previous_token_ids, self.tool_call_end_tokens
+            prev_tool_end_count = previous_token_ids.count(self.tool_call_end_token_id)
+            cur_tool_start_count = current_token_ids.count(
+                self.tool_call_start_token_id
             )
-            cur_tool_start_count = self._count_token_sequences(
-                current_token_ids, self.tool_call_start_tokens
-            )
-            cur_tool_end_count = self._count_token_sequences(
-                current_token_ids, self.tool_call_end_tokens
-            )
+            cur_tool_end_count = current_token_ids.count(self.tool_call_end_token_id)
             tool_call_portion = None
             text_portion = None
 
