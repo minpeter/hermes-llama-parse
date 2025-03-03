@@ -8,7 +8,6 @@ from typing import Union
 import partial_json_parser
 from partial_json_parser.core.options import Allow
 
-from shapely import buffer
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionRequest,
     DeltaFunctionCall,
@@ -80,6 +79,8 @@ class LlamaHermesToolParser(ToolParser):
 
         self.Buffered_delta_text = ""
 
+    # 아주 간단한 아이디어, <, tool, _call, >, <, /, tool, _call, > 토큰을 만나면 버퍼에 저장하고, 마지막 토큰을 만나면 버퍼를 비우고 반환한다.
+    # 버퍼에 저장하던 중, 일치하지 않는 순서의 토큰이 나오면 앞의 버퍼와 함께 반환.
     def tool_call_delta_buffer(self, delta_text: str):
         # 아직 마무리되지 않는 tool_call_start or tool_call_end token 순서라면, 토큰을 버퍼에 체우고 None을 반환한다.
         if (
@@ -169,6 +170,9 @@ class LlamaHermesToolParser(ToolParser):
         delta_token_ids: Sequence[int],
         request: ChatCompletionRequest,
     ) -> Union[DeltaMessage, None]:
+
+        # 1. 모든 토큰은 token_ids가 아닌, _text를 기반으로 파싱한다.
+        # 2. 들어온 모든 text데이터는 tool_call_delta_buffer함수를 거쳐서 버퍼 처리된 후 파싱에 사용된다.
 
         delta_text = self.tool_call_delta_buffer(delta_text)
         # previous_text의 마지막 문자가 self.Buffered_delta_text와 일치한다면 일치하는 부분만 제거한다
