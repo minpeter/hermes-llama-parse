@@ -8,6 +8,7 @@ from typing import Union
 import partial_json_parser
 from partial_json_parser.core.options import Allow
 
+from shapely import buffer
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionRequest,
     DeltaFunctionCall,
@@ -29,7 +30,7 @@ logger = init_logger(__name__)
 
 
 @ToolParserManager.register_module("llama_hermes")
-class Hermes2ProToolParser(ToolParser):
+class LlamaHermesToolParser(ToolParser):
 
     def __init__(self, tokenizer: AnyTokenizer):
         super().__init__(tokenizer)
@@ -60,20 +61,49 @@ class Hermes2ProToolParser(ToolParser):
                 "The model tokenizer must be passed to the ToolParser "
                 "constructor during construction."
             )
+        self.tool_call_start_token_ids = self.model_tokenizer.encode(
+            self.tool_call_start_token, add_special_tokens=False
+        )
+        self.tool_call_end_token_ids = self.model_tokenizer.encode(
+            self.tool_call_end_token, add_special_tokens=False
+        )
 
-        # Replace direct token ID lookup with token sequence handling
-        self.tool_call_start_tokens = self._get_token_ids(self.tool_call_start_token)
-        self.tool_call_end_tokens = self._get_token_ids(self.tool_call_end_token)
-        if not self.tool_call_start_tokens or not self.tool_call_end_tokens:
-            logger.error("Tool call tokens not found in the tokenizer!")
-            raise RuntimeError(
-                "Hermes 2 Pro Tool parser could not locate tool call start/end "
-                "tokens in the tokenizer!"
-            )
+        self.tool_call_start_token_array = [
+            self.model_tokenizer.decode([token_id])
+            for token_id in self.tool_call_start_token_ids
+        ]
 
-    def _get_token_ids(self, text: str) -> list[int]:
-        """Get all possible token IDs for a given text."""
-        return self.model_tokenizer.encode(text, add_special_tokens=False)
+        self.tool_call_end_token_array = [
+            self.model_tokenizer.decode([token_id])
+            for token_id in self.tool_call_end_token_ids
+        ]
+
+        self.Buffered_delta_text = ""
+
+    def tool_call_delta_buffer(self, delta_text: str):
+        # 아직 마무리되지 않는 tool_call_start or tool_call_end token 순서라면, 토큰을 버퍼에 체우고 None을 반환한다.
+        if (
+            delta_text in self.tool_call_start_token_array
+            or delta_text in self.tool_call_end_token_array
+        ):
+            # delta_text가 tool_call_start_token에 마지막 토큰이라면, 버퍼를 비우고 tool_call_start_token을 반환한다.
+            if (
+                delta_text == self.tool_call_start_token_array[-1]
+                or delta_text == self.tool_call_end_token_array[-1]
+            ):
+                buffered_text = self.Buffered_delta_text
+                self.Buffered_delta_text = ""
+                return buffered_text + delta_text
+            else:
+                self.Buffered_delta_text = self.Buffered_delta_text + delta_text
+                return ""
+        else:
+            if self.Buffered_delta_text:
+                buffered_text = self.Buffered_delta_text
+                self.Buffered_delta_text = ""
+                return buffered_text + delta_text
+            else:
+                return delta_text
 
     def extract_tool_calls(
         self,
@@ -140,10 +170,16 @@ class Hermes2ProToolParser(ToolParser):
         request: ChatCompletionRequest,
     ) -> Union[DeltaMessage, None]:
 
+        delta_text = self.tool_call_delta_buffer(delta_text)
+        # previous_text의 마지막 문자가 self.Buffered_delta_text와 일치한다면 일치하는 부분만 제거한다
+        if previous_text[-len(self.Buffered_delta_text) :] == self.Buffered_delta_text:
+            previous_text = previous_text[: -len(self.Buffered_delta_text)]
+            current_text = previous_text + delta_text
+
         logger.debug("delta_text: %s", delta_text)
         logger.debug("delta_token_ids: %s", delta_token_ids)
         # check to see if we should be streaming a tool call - is there a
-        if self.tool_call_start_token_id not in current_token_ids:
+        if self.tool_call_start_token not in current_text:
             logger.debug("No tool call tokens found!")
             return DeltaMessage(content=delta_text)
 
@@ -151,14 +187,10 @@ class Hermes2ProToolParser(ToolParser):
 
             # figure out where we are in the parsing by counting tool call
             # start & end tags
-            prev_tool_start_count = previous_token_ids.count(
-                self.tool_call_start_token_id
-            )
-            prev_tool_end_count = previous_token_ids.count(self.tool_call_end_token_id)
-            cur_tool_start_count = current_token_ids.count(
-                self.tool_call_start_token_id
-            )
-            cur_tool_end_count = current_token_ids.count(self.tool_call_end_token_id)
+            prev_tool_start_count = previous_text.count(self.tool_call_start_token)
+            prev_tool_end_count = previous_text.count(self.tool_call_end_token)
+            cur_tool_start_count = current_text.count(self.tool_call_start_token)
+            cur_tool_end_count = current_text.count(self.tool_call_end_token)
             tool_call_portion = None
             text_portion = None
 
@@ -194,6 +226,7 @@ class Hermes2ProToolParser(ToolParser):
                 cur_tool_start_count > cur_tool_end_count
                 and cur_tool_start_count > prev_tool_start_count
             ):
+                # TODO: unhandled case (multiple delta tokens)
                 if len(delta_token_ids) > 1:
                     tool_call_portion = current_text.split(self.tool_call_start_token)[
                         -1
