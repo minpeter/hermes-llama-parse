@@ -13,5 +13,5 @@ https://github.com/vllm-project/vllm/blob/fa82b9385330319619ddb293a9f01ccd96fd0f
 vllm serve meta-llama/Llama-3.2-3B-Instruct \
 --enforce-eager \
 --enable-auto-tool-choice --tool-call-parser llama_hermes --tool-parser-plugin <<this_cloned_repo_path>>/lh_tool_parser.py  \
---port 4000 --enable-lora --lora-modules tool=minpeter/m-3b-v1-iteration-00-sf-xlam-10
+--port 4000 --enable-lora --lora-modules tool=minpeter/m-3b-v1-iteration-00-sf-xlam-09
 ```
